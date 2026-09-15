@@ -1,0 +1,81 @@
+# =========================================================
+#  StorageBox - message.yml
+#  '&' で色コードが使えます。/stb reload で再読込されます。
+#  使用可能なプレースホルダーはそれぞれの項目に記載しています。
+# =========================================================
+
+prefix: "&8[&6StorageBox&8] &r"
+
+general:
+  no-permission: "&cこのコマンドを実行する権限がありません。"
+  player-only: "&cこのコマンドはプレイヤーのみ実行できます。"
+  reload-success: "&aconfig.ymlとmessage.ymlを再読み込みしました。"
+  unknown-command: "&c不明なサブコマンドです。 /stb <give|reload|autocollect>"
+
+give:
+  usage: "&c使い方: /stb give <プレイヤー名> [個数]"
+  player-not-found: "&cプレイヤー「%player%」が見つかりません。"
+  invalid-amount: "&c個数は1以上の整数で指定してください。"
+  success-sender: "&a%player% にStorageBoxを%amount%個渡しました。"
+  success-target: "&aStorageBoxを%amount%個受け取りました。"
+
+gui:
+  # StorageBox登録GUIのタイトル
+  title: "収納するアイテムを設定してください"
+
+register:
+  # アイテムを登録したときにチャットに送信されるメッセージ
+  success: "&a%item% をStorageBoxに登録しました。"
+  # 登録専用スロット以外に置こうとした/登録できないアイテムを置こうとしたとき
+  cannot-register: "&cこのアイテムは登録できません。"
+
+storage:
+  # ------- 使用（範囲内ブロックを見ての通常右クリック / case1）関連。成功時はメッセージなし -------
+  use-empty: "&c%item% のストレージが空のため使用できません。"
+
+  # ------- 収納（範囲外を見ての通常右クリックで1st / case2）関連。成功時はメッセージなし -------
+  deposit-none: "&cインベントリに収納できる %item% がありません。"
+
+  # ------- 取り出し（通常左クリックで1st / case3）関連。成功時はメッセージなし -------
+  withdraw-empty: "&c%item% のストレージに何も入っていないため取り出せませんでした。"
+
+  # ------- 一括収納（Shift + 右クリック / case4）関連。成功時もメッセージあり -------
+  deposit-all-success: "&a%item% を%amount%個、すべてStorageBoxに収納しました。（合計: %total%個）"
+
+  # ------- 一括取り出し（Shift + 左クリック / case5）関連。成功時もメッセージあり -------
+  withdraw-all-success: "&a%item% を%amount%個、すべて取り出しました。（残り: %total%個）"
+  withdraw-all-full: "&cインベントリがいっぱいのため、%item% を取り出せませんでした。"
+
+# ------- チェスト/シュルカーボックス/樽との一括転送（それらを注視 かつ 自身から半径1ブロック以内の場合、Shift+クリックで優先実行）関連 -------
+container:
+  # Shift + 左クリック: StorageBoxの中身をコンテナに収める
+  push-empty: "&c%item% のストレージが空のため、コンテナに移せるものがありません。"
+  push-full: "&cコンテナに空きがないため、%item% を移せませんでした。"
+  push-success: "&a%item% を%amount%個、コンテナに収めました。（残り: %total%個）"
+  # Shift + 右クリック: コンテナの中身をStorageBoxに収納する
+  pull-none: "&cコンテナの中に %item% が見つかりませんでした。"
+  pull-success: "&a%item% を%amount%個、コンテナからStorageBoxに収納しました。（合計: %total%個）"
+
+autocollect:
+  on: "&a%item% の自動収納をONにしました。"
+  off: "&c%item% の自動収納をOFFにしました。"
+  not-holding: "&c自動収納を切り替えるには、登録済みのStorageBoxを手に持ってください。"
+
+# ---------------------------------------------------------
+# 登録済みStorageBoxアイテム自体の名前・Lore書式
+# 使用できるプレースホルダー:
+#   %item%              : 登録されたアイテムの名前
+#   %stacks%            : 保管しているスタック数（整数）
+#   %remainder%         : 1スタック未満の個数
+#   %total%             : 個数換算での合計保管数
+#   %autocollect_colored% : 下のautocollect-on-label/off-labelの表記（色付き済み）に置き換わります
+# ---------------------------------------------------------
+registered-item:
+  name: "&b%item%&r/%stacks%st + %remainder%個"
+  lore:
+    - "&7【%item%】"
+    - "&7保管量：&f%stacks%st + %remainder%個"
+    - "&7アイテム数：&f%total%"
+    - "&7自動収納：%autocollect_colored%"
+  autocollect-on-label: "&aON"
+  autocollect-off-label: "&cOFF"

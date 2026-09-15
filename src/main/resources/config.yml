@@ -1,0 +1,43 @@
+# =========================================================
+#  StorageBox - config.yml
+#  /stb reload reloads this file (and message.yml) at runtime.
+# =========================================================
+
+craft:
+  # true にすると、作業台の中央以外の8マスにチェストを並べてクラフトできるようになります。
+  # false の場合はレシピが登録されず、/stb give でのみ入手できます。
+  enabled: true
+
+# 作成される（未登録の）StorageBoxアイテムの見た目設定
+item:
+  material: CHEST
+  name: "&e&lStorageBox"
+  lore:
+    - "&7右クリックして収納するアイテムを設定します"
+  # 1.21.4以降の custom_model_data は複数のリスト（strings/floats/flags/colors）を持つ形式です。
+  # ここでは strings 形式のみサポートします。使わない場合は空リストのままにしてください。
+  custom_model_data:
+    strings: []
+    # 例:
+    # strings:
+    #   - "storagebox"
+  # 同じアイテム同士を重ねられるようにするか（デフォルト false = スタック不可）
+  stackable: false
+
+# ボックスを右クリックして開いたときに鳴る音
+sound:
+  open: "minecraft:block.barrel.open"
+  register: "minecraft:entity.player.levelup"
+
+# アイテム登録後、自動収納のデフォルト状態 (true = ON)
+autocollect:
+  default: true
+
+# 収納/取り出し時の連打防止用クールダウン（tick単位、20tick = 1秒）
+# 「1回のクリックのつもりが複数回検知される」事故だけを防ぐための"重複クリック除去"用の値です。
+# 意図的な連打（秒間3～5クリック程度 = 200～330msごと）は全て別々の操作として通したいため、
+# その間隔より確実に短い値にしてください。デフォルトの2tick(100ms)はほとんどの環境で
+# 「1回のクリックの余韻」だけを吸収しつつ、速い連打も取りこぼしません。
+# もし極端に速いオートクリッカー等で誤爆する場合のみ、少しずつ上げて調整してください。
+anti-spam:
+  cooldown-ticks: 2

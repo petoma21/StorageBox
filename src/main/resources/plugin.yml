@@ -1,0 +1,16 @@
+name: StorageBox
+version: '1.0.0'
+main: me.petoma21.storageBox.StorageBox
+api-version: '1.21'
+authors: [petoma21]
+description: StorageBox item plugin - craft a storage box, register an item into it, and store/retrieve it.
+
+commands:
+  stb:
+    description: StorageBox main command
+    usage: /stb <give|reload|autocollect>
+
+permissions:
+  storagebox.admin:
+    description: Allows use of /stb give and /stb reload
+    default: op
