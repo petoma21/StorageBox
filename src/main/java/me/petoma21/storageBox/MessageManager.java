@@ -1,6 +1,7 @@
 package me.petoma21.storageBox;
 
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.file.FileConfiguration;
@@ -85,7 +86,8 @@ public class MessageManager {
                 return custom;
             }
         }
-        return Component.translatable(template.translationKey());
+        return Component.translatable(template.translationKey())
+                .color(NamedTextColor.WHITE);
     }
 
     /**
