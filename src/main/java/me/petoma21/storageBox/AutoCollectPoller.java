@@ -38,12 +38,6 @@ public class AutoCollectPoller {
         baselines.remove(playerId);
     }
 
-    /**
-     * Re-synchronizes the baseline for {@code template} to the player's current actual count.
-     * Call this immediately after this plugin itself adds or removes matching items from the
-     * player's inventory (e.g. after a withdraw), so the next check doesn't treat that expected
-     * change as a fresh external pickup.
-     */
     public void resync(Player player, ItemStack template) {
         Map<String, Integer> baseline = baselines.computeIfAbsent(player.getUniqueId(), k -> new HashMap<>());
         baseline.put(ItemUtil.templateKey(template), countMatching(player, template));

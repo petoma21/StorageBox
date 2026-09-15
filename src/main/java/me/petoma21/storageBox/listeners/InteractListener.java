@@ -83,10 +83,6 @@ public class InteractListener implements Listener {
         return null;
     }
 
-    // =========================================================================
-    //  Main interaction entry point (both left and right click)
-    // =========================================================================
-
     @EventHandler(ignoreCancelled = false)
     public void onInteract(PlayerInteractEvent event) {
         if (event.getHand() != EquipmentSlot.HAND) return;
@@ -125,12 +121,29 @@ public class InteractListener implements Listener {
             return;
         }
 
-        // ---- Right click: open GUI (unregistered) / case 1 (use) / case 2 (deposit 1 stack) / case 4 (sneaking: deposit all) ----
+// ---- Right click: open GUI (unregistered) / case 1 (use) / case 2 (deposit 1 stack) / case 4 (sneaking: deposit all) ----
         if (action != Action.RIGHT_CLICK_AIR && action != Action.RIGHT_CLICK_BLOCK) return;
 
-        // Note: this event fires "pre-cancelled" by the server whenever vanilla would do nothing
-        // (e.g. right-clicking air with a plain block item) - that's why this handler explicitly
-        // uses ignoreCancelled = false above, otherwise those clicks would silently never reach us.
+        if (!player.isSneaking()
+                && action == Action.RIGHT_CLICK_BLOCK
+                && event.getClickedBlock() != null) {
+
+            BlockState state = event.getClickedBlock().getState();
+
+            if (state instanceof Chest
+                    || state instanceof Barrel
+                    || state instanceof ShulkerBox
+                    || state instanceof org.bukkit.block.Hopper
+                    || state instanceof org.bukkit.block.Furnace
+                    || state instanceof org.bukkit.block.BlastFurnace
+                    || state instanceof org.bukkit.block.Smoker
+                    || state instanceof org.bukkit.block.Dispenser
+                    || state instanceof org.bukkit.block.Dropper
+                    || state instanceof org.bukkit.block.BrewingStand) {
+                return;
+            }
+        }
+
         event.setCancelled(true);
 
         if (!itemUtil.isRegistered(hand)) {
@@ -393,14 +406,6 @@ public class InteractListener implements Listener {
     //  Case 1: "Use" the stored item (block placement / consuming)
     // =========================================================================
 
-    /**
-     * "Use" the stored item once: places a block, eats food, drinks a potion, empties a
-     * water/lava bucket, drinks milk, or throws a spawn egg - mirroring the most common
-     * vanilla right-click interactions, and returning the resulting empty container
-     * (glass bottle / bucket) to the player's inventory just like vanilla does. Anything not
-     * covered here is a safe no-op, matching vanilla's own behaviour of doing nothing for
-     * items with no right-click action. No chat message on success (only on failure).
-     */
     private void doUse(Player player, PlayerInteractEvent event, ItemStack template, StorageEntry entry) {
         if (entry.getCount() <= 0) {
             plugin.getMessageManager().sendWithItem(player, "storage.use-empty", template, null);
@@ -473,13 +478,6 @@ public class InteractListener implements Listener {
         }
     }
 
-    /**
-     * Applies a generic, approximate "eating" effect. Reading the exact nutrition/saturation
-     * values of an arbitrary food item requires the (currently @Experimental and fast-moving)
-     * FOOD data component API; to keep this plugin stable across Paper builds we use a fixed,
-     * reasonable approximation instead. Adjust the constants below if you want closer parity
-     * with vanilla per-item nutrition values.
-     */
     private void applyFood(Player player, ItemStack template) {
         int nutrition = 4;
         float saturation = 0.3f;

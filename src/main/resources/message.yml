@@ -73,7 +73,7 @@ autocollect:
 registered-item:
   name: "&b%item%&r/%stacks%st + %remainder%個"
   lore:
-    - "&7【%item%】"
+    - "&f【&f%item%&f】"
     - "&7保管量：&f%stacks%st + %remainder%個"
     - "&7アイテム数：&f%total%"
     - "&7自動収納：%autocollect_colored%"

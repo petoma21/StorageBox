@@ -6,10 +6,6 @@ import org.bukkit.inventory.InventoryHolder;
 
 import java.util.UUID;
 
-/**
- * Identifies the 1-row "register an item" GUI and remembers which hand of which player
- * held the (still unregistered) StorageBox item that opened it.
- */
 public class RegisterGuiHolder implements InventoryHolder {
 
     public static final int TARGET_SLOT = 4;
