@@ -103,34 +103,34 @@ public class ItemUtil {
 
     /**
      * Turns an unregistered StorageBox item into a registered one that stores {@code template}.
-     * The box's own material is changed to match the registered item (e.g. registering a gold
-     * block turns the box itself into a gold block), so it visually reflects its contents.
-     * Mutates and returns the given item (call sites should re-set it into the relevant slot).
+     * The resulting item is built by cloning the TEMPLATE itself (preserving 100% of its original
+     * data - potion effects, firework effects, suspicious stew effects, custom model data,
+     * anything) rather than just copying its Material. This means the box's own physical item
+     * can later be hand directly to vanilla for real use (see InteractListener#doUse) and it will
+     * behave exactly like the genuine item - no per-item behaviour needs to be reimplemented here.
+     * Returns a brand new ItemStack; callers should re-set it into the relevant slot.
      */
     public ItemStack register(ItemStack box, ItemStack template, UUID owner) {
         ItemStack templateClone = template.clone();
         templateClone.setAmount(1);
 
-        // Change the box's own material to match the item it now stores.
-        box.setType(template.getType());
+        ItemStack newBox = templateClone.clone();
+        newBox.setAmount(box.getAmount());
 
-        ItemMeta meta = box.getItemMeta();
+        ItemMeta meta = newBox.getItemMeta();
         meta.getPersistentDataContainer().set(Keys.isStorageBox(plugin), PersistentDataType.BYTE, (byte) 1);
         meta.getPersistentDataContainer().set(Keys.registeredTemplate(plugin), PersistentDataType.STRING, encode(templateClone));
         meta.getPersistentDataContainer().set(Keys.owner(plugin), PersistentDataType.STRING, owner.toString());
-        box.setItemMeta(meta);
+        newBox.setItemMeta(meta);
 
-        // The box no longer needs the "unregistered" custom model, since it now visually IS the
-        // registered material; but it should keep glowing and (per config) stay non-stackable.
-        box.resetData(DataComponentTypes.CUSTOM_MODEL_DATA);
-        box.setData(DataComponentTypes.ENCHANTMENT_GLINT_OVERRIDE, true);
+        newBox.setData(DataComponentTypes.ENCHANTMENT_GLINT_OVERRIDE, true);
         if (!plugin.getConfigManager().isStackable()) {
-            box.setData(DataComponentTypes.MAX_STACK_SIZE, 1);
+            newBox.setData(DataComponentTypes.MAX_STACK_SIZE, 1);
         } else {
-            box.resetData(DataComponentTypes.MAX_STACK_SIZE);
+            newBox.resetData(DataComponentTypes.MAX_STACK_SIZE);
         }
 
-        return box;
+        return newBox;
     }
 
     // =========================================================================

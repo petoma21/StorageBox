@@ -3,35 +3,26 @@ package me.petoma21.storageBox.listeners;
 import me.petoma21.storageBox.ItemUtil;
 import me.petoma21.storageBox.StorageBox;
 import me.petoma21.storageBox.StorageEntry;
-import io.papermc.paper.datacomponent.DataComponentTypes;
-import io.papermc.paper.datacomponent.item.FoodProperties;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
-import org.bukkit.Sound;
-import org.bukkit.World;
 import org.bukkit.block.Barrel;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Chest;
 import org.bukkit.block.ShulkerBox;
-import org.bukkit.entity.EntityType;
-import org.bukkit.entity.Firework;
 import org.bukkit.entity.Player;
+import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerItemConsumeEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
-import org.bukkit.inventory.meta.FireworkMeta;
-import org.bukkit.inventory.meta.PotionMeta;
-import org.bukkit.potion.PotionEffect;
-import org.bukkit.potion.PotionType;
-import org.bukkit.util.Vector;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -168,12 +159,11 @@ public class InteractListener implements Listener {
         // ---- Right click: open GUI (unregistered) / case 1 (use) / case 2 (deposit 1 stack) / case 4 (sneaking: deposit all) ----
         if (action != Action.RIGHT_CLICK_AIR && action != Action.RIGHT_CLICK_BLOCK) return;
 
-        // Note: this event fires "pre-cancelled" by the server whenever vanilla would do nothing
-        // (e.g. right-clicking air with a plain block item) - that's why this handler explicitly
-        // uses ignoreCancelled = false above, otherwise those clicks would silently never reach us.
-        event.setCancelled(true);
-
         if (!itemUtil.isRegistered(hand)) {
+            // Note: this event fires "pre-cancelled" by the server whenever vanilla would do
+            // nothing (e.g. right-clicking air with a plain block item) - that's why this handler
+            // explicitly uses ignoreCancelled = false, otherwise those clicks would never reach us.
+            event.setCancelled(true);
             if (onCooldown(player)) return;
             plugin.playConfiguredSound(player, plugin.getConfigManager().getOpenSound());
             guiListener.openRegisterGui(player, EquipmentSlot.HAND);
@@ -184,11 +174,18 @@ public class InteractListener implements Listener {
 
         ItemStack template = itemUtil.getTemplate(hand);
         UUID owner = itemUtil.getOwner(hand);
-        if (template == null || owner == null) return;
-        if (!checkOwner(player, owner)) return;
+        if (template == null || owner == null) {
+            event.setCancelled(true);
+            return;
+        }
+        if (!checkOwner(player, owner)) {
+            event.setCancelled(true);
+            return;
+        }
         StorageEntry entry = plugin.getStorageDataManager().getOrCreateEntry(owner, template);
 
         if (player.isSneaking()) {
+            event.setCancelled(true);
             Inventory containerInv = action == Action.RIGHT_CLICK_BLOCK
                     ? nearbyContainerInventory(player, event.getClickedBlock())
                     : null;
@@ -198,8 +195,10 @@ public class InteractListener implements Listener {
                 doDepositAll(player, hand, template, entry); // case 4
             }
         } else if (isWithinUseRange(player, event.getClickedBlock())) {
-            doUse(player, event, template, entry); // case 1
+            // case 1: deliberately NOT calling event.setCancelled(true) here - see doUse().
+            doUse(player, event, template, entry);
         } else {
+            event.setCancelled(true);
             doDeposit(player, hand, template, entry); // case 2
         }
     }
@@ -432,187 +431,92 @@ public class InteractListener implements Listener {
     }
 
     // =========================================================================
-    //  Case 1: "Use" the stored item (block placement / consuming)
+    //  Case 1: "Use" the stored item - let VANILLA do the real work
     // =========================================================================
 
     /**
-     * "Use" the stored item once: places a block, eats food, drinks a potion, empties a
-     * water/lava bucket, drinks milk, or throws a spawn egg - mirroring the most common
-     * vanilla right-click interactions, and returning the resulting empty container
-     * (glass bottle / bucket) to the player's inventory just like vanilla does. Anything not
-     * covered here is a safe no-op, matching vanilla's own behaviour of doing nothing for
-     * items with no right-click action. No chat message on success (only on failure).
+     * Instead of hand-simulating every possible item behaviour (which can never cover every
+     * special case - rotten flesh's hunger effect, golden apple's absorption, chorus fruit's
+     * teleport, firework elytra boosts, correct block orientation, etc.), we let vanilla process
+     * the box's OWN real item completely normally - its Material AND full ItemMeta already match
+     * the registered item exactly (see ItemUtil#register), so vanilla's own logic handles it
+     * perfectly. We only deny the CLICKED BLOCK's own interaction (so casually pointing at a
+     * nearby chest/door/button while using the box doesn't open it), and otherwise don't cancel
+     * anything - then we look at what vanilla actually did (see {@link #handleUseAftermath}) and
+     * convert it into "decrement storage by 1, restore the box" instead of the box being consumed
+     * for real. This is also why we don't need a chat message here: whatever it does is exactly
+     * what using the real item would do (or, if it fails - full hunger, invalid placement, etc. -
+     * exactly what NOT being able to use it would look like too).
      */
     private void doUse(Player player, PlayerInteractEvent event, ItemStack template, StorageEntry entry) {
         if (entry.getCount() <= 0) {
+            event.setCancelled(true);
             plugin.getMessageManager().sendWithItem(player, "storage.use-empty", template, null);
             return;
         }
 
-        Material mat = template.getType();
-        boolean consumed = false;
-        Block clicked = event.getClickedBlock();
+        event.setUseInteractedBlock(Event.Result.DENY);
 
-        if (mat.isBlock() && event.getAction() == Action.RIGHT_CLICK_BLOCK && clicked != null) {
-            Block target = clicked.getRelative(event.getBlockFace());
-            if (canPlaceAt(target)) {
-                target.setType(mat);
-                consumed = true;
-            }
-        } else if (isEdible(mat)) {
-            if (canEatMore(player, template)) {
-                applyFood(player, template);
-                consumed = true;
-            }
-            // else: already full and this food doesn't allow eating past full (e.g. not a golden
-            // apple/chorus fruit) - vanilla simply does nothing in this case, so we do the same:
-            // no consumption, no message.
-        } else if (mat == Material.POTION) {
-            applyPotion(player, template);
-            giveContainer(player, Material.GLASS_BOTTLE);
-            consumed = true;
-        } else if (mat == Material.MILK_BUCKET) {
-            for (PotionEffect eff : player.getActivePotionEffects()) {
-                player.removePotionEffect(eff.getType());
-            }
-            giveContainer(player, Material.BUCKET);
-            consumed = true;
-        } else if (mat == Material.FIREWORK_ROCKET) {
-            launchFirework(player, template);
-            consumed = true;
-        } else if ((mat == Material.WATER_BUCKET || mat == Material.LAVA_BUCKET) && clicked != null) {
-            Block target = clicked.getRelative(event.getBlockFace());
-            if (canPlaceAt(target)) {
-                target.setType(mat == Material.WATER_BUCKET ? Material.WATER : Material.LAVA);
-                giveContainer(player, Material.BUCKET);
-                consumed = true;
-            }
-        } else if (mat.name().endsWith("_SPAWN_EGG") && clicked != null) {
-            EntityType type = spawnEggEntityType(mat);
-            if (type != null) {
-                World world = clicked.getWorld();
-                Location loc = clicked.getRelative(event.getBlockFace()).getLocation().add(0.5, 0.1, 0.5);
-                world.spawnEntity(loc, type);
-                consumed = true;
-            }
-        }
-
-        if (consumed) {
-            entry.setCount(entry.getCount() - 1);
-            finishTransaction(player, player.getInventory().getItemInMainHand(), template, entry);
-        }
+        ItemStack before = player.getInventory().getItemInMainHand().clone();
+        Bukkit.getScheduler().runTask(plugin, () -> handleUseAftermath(player, before, template, entry));
     }
 
-    private void giveContainer(Player player, Material containerMaterial) {
-        ItemStack container = new ItemStack(containerMaterial, 1);
-        Map<Integer, ItemStack> leftover = player.getInventory().addItem(container);
+    /**
+     * Also catches food/potions/milk/honey/suspicious stew/etc. - these have a multi-tick
+     * eating/drinking animation, so the 1-tick check scheduled by {@link #doUse} runs too early
+     * (the item is still "in use" at that point, so it correctly sees no change and does
+     * nothing). This event fires exactly when the consumption actually completes, whether that
+     * takes 1 tick or 32.
+     */
+    @EventHandler(ignoreCancelled = true)
+    public void onConsume(PlayerItemConsumeEvent event) {
+        if (event.getHand() != EquipmentSlot.HAND) return;
+        Player player = event.getPlayer();
+        ItemStack consumedItem = event.getItem();
+        if (!itemUtil.isRegistered(consumedItem)) return;
+
+        ItemStack template = itemUtil.getTemplate(consumedItem);
+        UUID owner = itemUtil.getOwner(consumedItem);
+        if (template == null || owner == null || !owner.equals(player.getUniqueId())) return;
+
+        StorageEntry entry = plugin.getStorageDataManager().getOrCreateEntry(owner, template);
+        ItemStack snapshot = consumedItem.clone();
+        Bukkit.getScheduler().runTask(plugin, () -> handleUseAftermath(player, snapshot, template, entry));
+    }
+
+    /**
+     * Compares the main-hand item to what it was before letting vanilla process the click. If
+     * fewer of our box are there now (it was fully consumed, or a stack got smaller), that
+     * difference is what storage actually lost - vanilla's own byproduct (empty bucket, glass
+     * bottle), if any, is preserved and given back rather than being overwritten, and the box
+     * itself is restored to its original amount with an updated, refreshed display.
+     */
+    private void handleUseAftermath(Player player, ItemStack before, ItemStack template, StorageEntry entry) {
+        ItemStack after = player.getInventory().getItemInMainHand();
+
+        boolean afterIsSameBox = after != null && itemUtil.isRegistered(after)
+                && itemUtil.getOwner(after) != null && itemUtil.getOwner(after).equals(itemUtil.getOwner(before));
+
+        int consumed = before.getAmount() - (afterIsSameBox ? after.getAmount() : 0);
+        if (consumed <= 0) return; // unchanged - nothing happened yet, or the action failed/did nothing
+
+        ItemStack byproduct = (!afterIsSameBox && after != null && after.getType() != Material.AIR) ? after.clone() : null;
+
+        entry.setCount(Math.max(0, entry.getCount() - consumed));
+        ItemStack restoredBox = before.clone();
+        player.getInventory().setItemInMainHand(restoredBox);
+
+        if (byproduct != null) {
+            giveOrDrop(player, byproduct);
+        }
+
+        finishTransaction(player, restoredBox, template, entry);
+    }
+
+    private void giveOrDrop(Player player, ItemStack item) {
+        Map<Integer, ItemStack> leftover = player.getInventory().addItem(item);
         for (ItemStack l : leftover.values()) {
             player.getWorld().dropItemNaturally(player.getLocation(), l);
-        }
-    }
-
-    private boolean canPlaceAt(Block block) {
-        return block.isEmpty() || block.isLiquid();
-    }
-
-    private boolean isEdible(Material mat) {
-        try {
-            return mat.isEdible();
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    /**
-     * True if the player is allowed to eat this food right now: either their hunger isn't full,
-     * or the food is one of the special "always edible" items (golden apple, chorus fruit, etc.)
-     * that vanilla lets you eat even at full hunger.
-     */
-    private boolean canEatMore(Player player, ItemStack template) {
-        if (player.getFoodLevel() < 20) {
-            return true;
-        }
-        try {
-            FoodProperties food = template.getData(DataComponentTypes.FOOD);
-            if (food != null) {
-                return food.canAlwaysEat();
-            }
-        } catch (Throwable ignored) {
-            // Fall through to "can't eat" below if this experimental component ever changes shape.
-        }
-        return false;
-    }
-
-    /**
-     * Applies the item's real nutrition/saturation (via the FOOD data component, so values match
-     * the actual food exactly) and plays the vanilla eating sound. The one thing we genuinely
-     * cannot reproduce here is the client-side "arm raises food to mouth" chewing animation
-     * itself - Bukkit has no API to trigger that for an item the player isn't really holding as
-     * their active-use item, since vanilla only starts that animation as a side effect of really
-     * using a real ItemStack instance it already captured internally. Sound + correct hunger
-     * restore get us as close as the public API allows.
-     */
-    private void applyFood(Player player, ItemStack template) {
-        int nutrition = 4;
-        float saturation = 0.3f;
-        try {
-            FoodProperties food = template.getData(DataComponentTypes.FOOD);
-            if (food != null) {
-                nutrition = food.nutrition();
-                saturation = food.saturation();
-            }
-        } catch (Throwable ignored) {
-            // Fall back to the generic defaults above if this experimental component ever changes shape.
-        }
-        player.setFoodLevel(Math.min(20, player.getFoodLevel() + nutrition));
-        player.setSaturation(Math.min(20f, player.getSaturation() + saturation));
-        player.getWorld().playSound(player.getLocation(), Sound.ENTITY_GENERIC_EAT, 1f, 1f);
-    }
-
-    /**
-     * Launches a REAL firework rocket entity built from the registered rocket's own FireworkMeta
-     * (so the explosion colors/shape/sound are identical to the genuine item), and applies an
-     * elytra boost if the player is currently gliding - closely matching real firework rocket
-     * behaviour, since a real Firework entity is doing the work rather than a simulated effect.
-     */
-    private void launchFirework(Player player, ItemStack template) {
-        Location loc = player.getLocation();
-        Firework firework = player.getWorld().spawn(loc, Firework.class);
-        FireworkMeta meta = firework.getFireworkMeta();
-
-        if (template.getItemMeta() instanceof FireworkMeta templateMeta) {
-            meta.setPower(templateMeta.getPower());
-            meta.clearEffects();
-            meta.addEffects(templateMeta.getEffects());
-        }
-        firework.setFireworkMeta(meta);
-
-        if (player.isGliding()) {
-            Vector direction = player.getLocation().getDirection().normalize();
-            double boost = 1.5 + (meta.getPower() * 0.5);
-            player.setVelocity(player.getVelocity().add(direction.multiply(boost)));
-        }
-    }
-
-    private void applyPotion(Player player, ItemStack template) {
-        if (!(template.getItemMeta() instanceof PotionMeta meta)) return;
-        PotionType base = meta.getBasePotionType();
-        if (base != null) {
-            for (PotionEffect effect : base.getPotionEffects()) {
-                player.addPotionEffect(effect);
-            }
-        }
-        for (PotionEffect effect : meta.getCustomEffects()) {
-            player.addPotionEffect(effect);
-        }
-    }
-
-    private EntityType spawnEggEntityType(Material mat) {
-        String name = mat.name().replace("_SPAWN_EGG", "");
-        try {
-            return EntityType.valueOf(name);
-        } catch (IllegalArgumentException e) {
-            return null;
         }
     }
 
