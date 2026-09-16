@@ -17,6 +17,7 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryView;
 import org.bukkit.inventory.ItemStack;
 
+import java.util.Map;
 
 public class GuiListener implements Listener {
 
@@ -124,6 +125,9 @@ public class GuiListener implements Listener {
         }
         if (plugin.getConfigManager().isRegistrationBlacklisted(center.getType())) {
             // Should already have been blocked by onClick/onDrag - this is just a safety net.
+            // Since this GUI isn't backed by a real block, anything left in it would otherwise
+            // simply vanish when the inventory closes - so give it back to the player instead.
+            returnItemToPlayer(player, center);
             plugin.getMessageManager().send(player, "register.blacklisted");
             return;
         }
@@ -156,5 +160,13 @@ public class GuiListener implements Listener {
         plugin.getAutoCollectPoller().resync(player, template);
         plugin.playConfiguredSound(player, plugin.getConfigManager().getRegisterSound());
         plugin.getMessageManager().sendWithItem(player, "register.success", template, null);
+    }
+
+    /** Gives an item back to the player, dropping any overflow at their feet if the inventory is full. */
+    private void returnItemToPlayer(Player player, ItemStack item) {
+        Map<Integer, ItemStack> leftover = player.getInventory().addItem(item);
+        for (ItemStack l : leftover.values()) {
+            player.getWorld().dropItemNaturally(player.getLocation(), l);
+        }
     }
 }
