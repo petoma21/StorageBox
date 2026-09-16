@@ -65,6 +65,12 @@ public class GuiListener implements Listener {
                 plugin.getMessageManager().send(player, "register.cannot-register");
                 return;
             }
+            if (cursor != null && cursor.getType() != Material.AIR
+                    && plugin.getConfigManager().isRegistrationBlacklisted(cursor.getType())) {
+                event.setCancelled(true);
+                plugin.getMessageManager().send(player, "register.blacklisted");
+                return;
+            }
             // Allow the click to proceed, then check next tick whether the center slot now holds an item.
             Bukkit.getScheduler().runTask(plugin, () -> maybeAutoClose(holder, view.getTopInventory(), player));
         }
@@ -84,9 +90,17 @@ public class GuiListener implements Listener {
             }
         }
 
-        if (event.getWhoClicked() instanceof Player player) {
-            Bukkit.getScheduler().runTask(plugin, () -> maybeAutoClose(holder, view.getTopInventory(), player));
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+
+        ItemStack resultItem = event.getNewItems().get(RegisterGuiHolder.TARGET_SLOT);
+        if (resultItem != null && resultItem.getType() != Material.AIR
+                && plugin.getConfigManager().isRegistrationBlacklisted(resultItem.getType())) {
+            event.setCancelled(true);
+            plugin.getMessageManager().send(player, "register.blacklisted");
+            return;
         }
+
+        Bukkit.getScheduler().runTask(plugin, () -> maybeAutoClose(holder, view.getTopInventory(), player));
     }
 
     private void maybeAutoClose(RegisterGuiHolder holder, Inventory topInventory, Player player) {
@@ -106,6 +120,11 @@ public class GuiListener implements Listener {
         ItemStack center = event.getInventory().getItem(RegisterGuiHolder.TARGET_SLOT);
         if (center == null || center.getType() == Material.AIR || itemUtil.isStorageBox(center)) {
             // Cancelled registration (E/Escape with nothing placed, or an invalid item) - nothing to register.
+            return;
+        }
+        if (plugin.getConfigManager().isRegistrationBlacklisted(center.getType())) {
+            // Should already have been blocked by onClick/onDrag - this is just a safety net.
+            plugin.getMessageManager().send(player, "register.blacklisted");
             return;
         }
 

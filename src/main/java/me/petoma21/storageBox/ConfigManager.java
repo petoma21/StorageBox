@@ -3,7 +3,10 @@ package me.petoma21.storageBox;
 import org.bukkit.Material;
 import org.bukkit.configuration.file.FileConfiguration;
 
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
+import java.util.logging.Level;
 
 public class ConfigManager {
 
@@ -19,6 +22,7 @@ public class ConfigManager {
     private String registerSound;
     private boolean autocollectDefault;
     private int antiSpamCooldownTicks;
+    private Set<Material> registrationBlacklist;
 
     public ConfigManager(StorageBox plugin) {
         this.plugin = plugin;
@@ -45,6 +49,16 @@ public class ConfigManager {
 
         autocollectDefault = c.getBoolean("autocollect.default", true);
         antiSpamCooldownTicks = c.getInt("anti-spam.cooldown-ticks", 6);
+
+        registrationBlacklist = EnumSet.noneOf(Material.class);
+        for (String name : c.getStringList("registration.blacklist")) {
+            Material blacklisted = Material.matchMaterial(name);
+            if (blacklisted != null) {
+                registrationBlacklist.add(blacklisted);
+            } else {
+                plugin.getLogger().log(Level.WARNING, "config.yml: unknown material in registration.blacklist: " + name);
+            }
+        }
     }
 
     public boolean isCraftEnabled() {
@@ -85,5 +99,10 @@ public class ConfigManager {
 
     public int getAntiSpamCooldownTicks() {
         return antiSpamCooldownTicks;
+    }
+
+    /** True if config.yml's registration.blacklist forbids registering this material into a StorageBox. */
+    public boolean isRegistrationBlacklisted(Material material) {
+        return registrationBlacklist.contains(material);
     }
 }

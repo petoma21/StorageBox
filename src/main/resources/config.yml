@@ -24,6 +24,12 @@ item:
   # 同じアイテム同士を重ねられるようにするか（デフォルト false = スタック不可）
   stackable: false
 
+registration:
+  blacklist:
+    - SHULKER_BOX
+    - FIREWORK_ROCKET
+    - ELYTRA
+    -
 # ボックスを右クリックして開いたときに鳴る音
 sound:
   open: "minecraft:block.barrel.open"

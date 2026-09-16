@@ -28,10 +28,14 @@ register:
   success: "&a%item% をStorageBoxに登録しました。"
   # 登録専用スロット以外に置こうとした/登録できないアイテムを置こうとしたとき
   cannot-register: "&cこのアイテムは登録できません。"
+  # config.ymlのregistration.blacklistに指定されているアイテムを置こうとしたとき
+  blacklisted: "&cこのアイテムは設定により登録できません。"
 
 storage:
   # ------- 使用（範囲内ブロックを見ての通常右クリック / case1）関連。成功時はメッセージなし -------
   use-empty: "&c%item% のストレージが空です。"
+
+  not-owner: "&cこのストレージボックスは自身のものではないため使用できません。\n所有者：%owner%"
 
   # ------- 収納（範囲外を見ての通常右クリックで1st / case2）関連。成功時はメッセージなし -------
   deposit-none: "&cインベントリに収納できる %item% がありません。"
