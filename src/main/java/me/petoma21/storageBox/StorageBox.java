@@ -49,6 +49,7 @@ public final class StorageBox extends JavaPlugin implements Listener {
         Bukkit.getPluginManager().registerEvents(guiListener, this);
         Bukkit.getPluginManager().registerEvents(new InteractListener(this, guiListener), this);
         Bukkit.getPluginManager().registerEvents(new PickupListener(this), this);
+        Bukkit.getPluginManager().registerEvents(autoCollectPoller, this);
         Bukkit.getPluginManager().registerEvents(this, this);
 
         StbCommand command = new StbCommand(this);
