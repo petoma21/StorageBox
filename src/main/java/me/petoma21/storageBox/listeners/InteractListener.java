@@ -11,6 +11,8 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Chest;
 import org.bukkit.block.ShulkerBox;
+import org.bukkit.entity.EntityType;
+import org.bukkit.entity.Firework;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
@@ -23,6 +25,8 @@ import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
+import org.bukkit.inventory.meta.FireworkMeta;
+import org.bukkit.util.Vector;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -167,6 +171,20 @@ public class InteractListener implements Listener {
             if (onCooldown(player)) return;
             plugin.playConfiguredSound(player, plugin.getConfigManager().getOpenSound());
             guiListener.openRegisterGui(player, EquipmentSlot.HAND);
+            return;
+        }
+
+        // If not sneaking and pointing at a block that has its own vanilla right-click behavior
+        // (chest, furnace, crafting table, door, button, etc.), let it work completely normally
+        // instead of triggering the StorageBox's use/placement - matching vanilla exactly for
+        // this click. Sneaking is excluded from this rule (it still runs the container
+        // pull/deposit-all logic above as before). We explicitly force ALLOW/DENY here rather
+        // than just leaving the event untouched, since relying on default Result values proved
+        // unreliable for guaranteeing the block's own interaction actually still runs.
+        if (!player.isSneaking() && action == Action.RIGHT_CLICK_BLOCK
+                && event.getClickedBlock() != null && event.getClickedBlock().getType().isInteractable()) {
+            event.setUseInteractedBlock(Event.Result.ALLOW);
+            event.setUseItemInHand(Event.Result.DENY);
             return;
         }
 
@@ -431,22 +449,16 @@ public class InteractListener implements Listener {
     }
 
     // =========================================================================
-    //  Case 1: "Use" the stored item - let VANILLA do the real work
+    //  Case 1: "Use" the stored item
     // =========================================================================
 
     /**
-     * Instead of hand-simulating every possible item behaviour (which can never cover every
-     * special case - rotten flesh's hunger effect, golden apple's absorption, chorus fruit's
-     * teleport, firework elytra boosts, correct block orientation, etc.), we let vanilla process
-     * the box's OWN real item completely normally - its Material AND full ItemMeta already match
-     * the registered item exactly (see ItemUtil#register), so vanilla's own logic handles it
-     * perfectly. We only deny the CLICKED BLOCK's own interaction (so casually pointing at a
-     * nearby chest/door/button while using the box doesn't open it), and otherwise don't cancel
-     * anything - then we look at what vanilla actually did (see {@link #handleUseAftermath}) and
-     * convert it into "decrement storage by 1, restore the box" instead of the box being consumed
-     * for real. This is also why we don't need a chat message here: whatever it does is exactly
-     * what using the real item would do (or, if it fails - full hunger, invalid placement, etc. -
-     * exactly what NOT being able to use it would look like too).
+     * Food, potions, milk, honey bottles, suspicious stew, etc. are let through to vanilla for
+     * real processing (see class javadoc / onConsume below) - their nutrition/effects are too
+     * varied and item-specific to safely hand-simulate. Everything else (blocks, buckets,
+     * fireworks, spawn eggs) is cancelled and simulated manually here instead: letting vanilla
+     * drive block placement turned out to be unreliable in practice (it stopped placing blocks
+     * correctly), so those go back to the simple, previously-working direct approach.
      */
     private void doUse(Player player, PlayerInteractEvent event, ItemStack template, StorageEntry entry) {
         if (entry.getCount() <= 0) {
@@ -455,18 +467,110 @@ public class InteractListener implements Listener {
             return;
         }
 
-        event.setUseInteractedBlock(Event.Result.DENY);
+        Material mat = template.getType();
 
-        ItemStack before = player.getInventory().getItemInMainHand().clone();
-        Bukkit.getScheduler().runTask(plugin, () -> handleUseAftermath(player, before, template, entry));
+        if (isConsumable(mat)) {
+            // Don't cancel - let vanilla process the real eating/drinking. Only block the
+            // clicked block's own interaction, same reasoning as the interactable-block check
+            // above (so pointing near a chest while eating doesn't open it).
+            event.setUseInteractedBlock(Event.Result.DENY);
+            return;
+        }
+
+        // Everything else: cancel fully and simulate manually.
+        event.setCancelled(true);
+
+        boolean consumed = false;
+        Block clicked = event.getClickedBlock();
+
+        if (mat.isBlock() && event.getAction() == Action.RIGHT_CLICK_BLOCK && clicked != null) {
+            Block target = clicked.getRelative(event.getBlockFace());
+            if (canPlaceAt(target)) {
+                target.setType(mat);
+                consumed = true;
+            }
+        } else if (mat == Material.FIREWORK_ROCKET) {
+            launchFirework(player, template);
+            consumed = true;
+        } else if ((mat == Material.WATER_BUCKET || mat == Material.LAVA_BUCKET) && clicked != null) {
+            Block target = clicked.getRelative(event.getBlockFace());
+            if (canPlaceAt(target)) {
+                target.setType(mat == Material.WATER_BUCKET ? Material.WATER : Material.LAVA);
+                giveContainer(player, Material.BUCKET);
+                consumed = true;
+            }
+        } else if (mat.name().endsWith("_SPAWN_EGG") && clicked != null) {
+            EntityType type = spawnEggEntityType(mat);
+            if (type != null) {
+                Location loc = clicked.getRelative(event.getBlockFace()).getLocation().add(0.5, 0.1, 0.5);
+                clicked.getWorld().spawnEntity(loc, type);
+                consumed = true;
+            }
+        }
+
+        if (consumed) {
+            entry.setCount(entry.getCount() - 1);
+            finishTransaction(player, player.getInventory().getItemInMainHand(), template, entry);
+        }
+    }
+
+    /** True for anything that goes through vanilla's eat/drink flow (fires PlayerItemConsumeEvent). */
+    private boolean isConsumable(Material mat) {
+        if (mat == Material.POTION || mat == Material.MILK_BUCKET) return true;
+        try {
+            return mat.isEdible();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private boolean canPlaceAt(Block block) {
+        return block.isEmpty() || block.isLiquid();
+    }
+
+    private void giveContainer(Player player, Material containerMaterial) {
+        ItemStack container = new ItemStack(containerMaterial, 1);
+        giveOrDrop(player, container);
+    }
+
+    /**
+     * Launches a REAL firework rocket entity built from the registered rocket's own FireworkMeta
+     * (so the explosion colors/shape/sound are identical to the genuine item), and applies an
+     * elytra boost if the player is currently gliding.
+     */
+    private void launchFirework(Player player, ItemStack template) {
+        Location loc = player.getLocation();
+        Firework firework = player.getWorld().spawn(loc, Firework.class);
+        FireworkMeta meta = firework.getFireworkMeta();
+
+        if (template.getItemMeta() instanceof FireworkMeta templateMeta) {
+            meta.setPower(templateMeta.getPower());
+            meta.clearEffects();
+            meta.addEffects(templateMeta.getEffects());
+        }
+        firework.setFireworkMeta(meta);
+
+        if (player.isGliding()) {
+            Vector direction = player.getLocation().getDirection().normalize();
+            double boost = 1.5 + (meta.getPower() * 0.5);
+            player.setVelocity(player.getVelocity().add(direction.multiply(boost)));
+        }
+    }
+
+    private EntityType spawnEggEntityType(Material mat) {
+        String name = mat.name().replace("_SPAWN_EGG", "");
+        try {
+            return EntityType.valueOf(name);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     /**
      * Also catches food/potions/milk/honey/suspicious stew/etc. - these have a multi-tick
-     * eating/drinking animation, so the 1-tick check scheduled by {@link #doUse} runs too early
-     * (the item is still "in use" at that point, so it correctly sees no change and does
-     * nothing). This event fires exactly when the consumption actually completes, whether that
-     * takes 1 tick or 32.
+     * eating/drinking animation, so a simple 1-tick check would run too early (the item is still
+     * "in use" at that point). This event fires exactly when the consumption actually completes,
+     * whether that takes 1 tick or 32.
      */
     @EventHandler(ignoreCancelled = true)
     public void onConsume(PlayerItemConsumeEvent event) {
@@ -485,11 +589,11 @@ public class InteractListener implements Listener {
     }
 
     /**
-     * Compares the main-hand item to what it was before letting vanilla process the click. If
-     * fewer of our box are there now (it was fully consumed, or a stack got smaller), that
-     * difference is what storage actually lost - vanilla's own byproduct (empty bucket, glass
-     * bottle), if any, is preserved and given back rather than being overwritten, and the box
-     * itself is restored to its original amount with an updated, refreshed display.
+     * Compares the main-hand item to what it was before letting vanilla process a consumable
+     * click. If fewer of our box are there now (it was fully consumed, or a stack got smaller),
+     * that difference is what storage actually lost - vanilla's own byproduct (empty bucket,
+     * glass bottle), if any, is preserved and given back rather than being overwritten, and the
+     * box itself is restored to its original amount with an updated, refreshed display.
      */
     private void handleUseAftermath(Player player, ItemStack before, ItemStack template, StorageEntry entry) {
         ItemStack after = player.getInventory().getItemInMainHand();
