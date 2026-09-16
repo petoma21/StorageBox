@@ -3,8 +3,12 @@ package me.petoma21.storageBox.listeners;
 import me.petoma21.storageBox.ItemUtil;
 import me.petoma21.storageBox.StorageBox;
 import me.petoma21.storageBox.StorageEntry;
+import io.papermc.paper.datacomponent.DataComponentTypes;
+import io.papermc.paper.datacomponent.item.FoodProperties;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.block.Barrel;
 import org.bukkit.block.Block;
@@ -12,6 +16,7 @@ import org.bukkit.block.BlockState;
 import org.bukkit.block.Chest;
 import org.bukkit.block.ShulkerBox;
 import org.bukkit.entity.EntityType;
+import org.bukkit.entity.Firework;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -22,9 +27,11 @@ import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
+import org.bukkit.inventory.meta.FireworkMeta;
 import org.bukkit.inventory.meta.PotionMeta;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionType;
+import org.bukkit.util.Vector;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -47,6 +54,22 @@ public class InteractListener implements Listener {
         this.guiListener = guiListener;
     }
 
+    /**
+     * Debounces a single physical click from being registered as multiple actions. This does
+     * NOT limit how fast you can click on purpose - the default (2 ticks / 100ms) sits well
+     * below a deliberate 3-5 clicks/sec rapid-click pace (200-330ms apart), so genuine repeated
+     * clicks always go through; it only swallows a click being misread as more than one action.
+     *
+     * Note: we intentionally do NOT use Bukkit's native Player#setCooldown/hasCooldown here.
+     * Paper's cooldown system is now backed by the USE_COOLDOWN data component, which arbitrary
+     * items (a plain gold block, a chest, etc.) do not define a cooldown group for by default -
+     * meaning setCooldown() can silently no-op for our items. Tracking timestamps ourselves
+     * guarantees the debounce actually applies regardless of the item's own component data.
+     * There is no server-side "wait for button release" signal in the Minecraft protocol at
+     * all - the client only ever sends discrete per-click packets - so a short, tunable window
+     * (anti-spam.cooldown-ticks in config.yml) is the only mechanism available; adjust it if
+     * your testing shows it's too strict or too lax for your playerbase/latency.
+     */
     private boolean onCooldown(Player player) {
         long now = System.currentTimeMillis();
         long cooldownMillis = plugin.getConfigManager().getAntiSpamCooldownTicks() * 50L;
@@ -73,6 +96,22 @@ public class InteractListener implements Listener {
                 && Math.abs(block.getZ() - feet.getZ()) <= 1;
     }
 
+    /**
+     * Blocks anyone other than the registering owner from using a registered StorageBox at all.
+     * Sends the "not yours" message (including the owner's name) and returns false if denied.
+     */
+    private boolean checkOwner(Player player, UUID owner) {
+        if (owner.equals(player.getUniqueId())) {
+            return true;
+        }
+        String ownerName = Bukkit.getOfflinePlayer(owner).getName();
+        if (ownerName == null) {
+            ownerName = owner.toString();
+        }
+        plugin.getMessageManager().send(player, "storage.not-owner", Map.of("owner", ownerName));
+        return false;
+    }
+
     /** Returns the inventory of the chest/shulker box/barrel the player is looking at, if it's also within 1 block of them. */
     private Inventory nearbyContainerInventory(Player player, Block clickedBlock) {
         if (clickedBlock == null || !isWithinOneBlock(player, clickedBlock)) return null;
@@ -82,6 +121,10 @@ public class InteractListener implements Listener {
         if (state instanceof Barrel barrel) return barrel.getInventory();
         return null;
     }
+
+    // =========================================================================
+    //  Main interaction entry point (both left and right click)
+    // =========================================================================
 
     @EventHandler(ignoreCancelled = false)
     public void onInteract(PlayerInteractEvent event) {
@@ -104,6 +147,7 @@ public class InteractListener implements Listener {
             ItemStack template = itemUtil.getTemplate(hand);
             UUID owner = itemUtil.getOwner(hand);
             if (template == null || owner == null) return;
+            if (!checkOwner(player, owner)) return;
             StorageEntry entry = plugin.getStorageDataManager().getOrCreateEntry(owner, template);
 
             if (player.isSneaking()) {
@@ -121,29 +165,12 @@ public class InteractListener implements Listener {
             return;
         }
 
-// ---- Right click: open GUI (unregistered) / case 1 (use) / case 2 (deposit 1 stack) / case 4 (sneaking: deposit all) ----
+        // ---- Right click: open GUI (unregistered) / case 1 (use) / case 2 (deposit 1 stack) / case 4 (sneaking: deposit all) ----
         if (action != Action.RIGHT_CLICK_AIR && action != Action.RIGHT_CLICK_BLOCK) return;
 
-        if (!player.isSneaking()
-                && action == Action.RIGHT_CLICK_BLOCK
-                && event.getClickedBlock() != null) {
-
-            BlockState state = event.getClickedBlock().getState();
-
-            if (state instanceof Chest
-                    || state instanceof Barrel
-                    || state instanceof ShulkerBox
-                    || state instanceof org.bukkit.block.Hopper
-                    || state instanceof org.bukkit.block.Furnace
-                    || state instanceof org.bukkit.block.BlastFurnace
-                    || state instanceof org.bukkit.block.Smoker
-                    || state instanceof org.bukkit.block.Dispenser
-                    || state instanceof org.bukkit.block.Dropper
-                    || state instanceof org.bukkit.block.BrewingStand) {
-                return;
-            }
-        }
-
+        // Note: this event fires "pre-cancelled" by the server whenever vanilla would do nothing
+        // (e.g. right-clicking air with a plain block item) - that's why this handler explicitly
+        // uses ignoreCancelled = false above, otherwise those clicks would silently never reach us.
         event.setCancelled(true);
 
         if (!itemUtil.isRegistered(hand)) {
@@ -158,6 +185,7 @@ public class InteractListener implements Listener {
         ItemStack template = itemUtil.getTemplate(hand);
         UUID owner = itemUtil.getOwner(hand);
         if (template == null || owner == null) return;
+        if (!checkOwner(player, owner)) return;
         StorageEntry entry = plugin.getStorageDataManager().getOrCreateEntry(owner, template);
 
         if (player.isSneaking()) {
@@ -193,6 +221,7 @@ public class InteractListener implements Listener {
         ItemStack template = itemUtil.getTemplate(hand);
         UUID owner = itemUtil.getOwner(hand);
         if (template == null || owner == null) return;
+        if (!checkOwner(player, owner)) return;
         StorageEntry entry = plugin.getStorageDataManager().getOrCreateEntry(owner, template);
 
         if (player.isSneaking()) {
@@ -406,6 +435,14 @@ public class InteractListener implements Listener {
     //  Case 1: "Use" the stored item (block placement / consuming)
     // =========================================================================
 
+    /**
+     * "Use" the stored item once: places a block, eats food, drinks a potion, empties a
+     * water/lava bucket, drinks milk, or throws a spawn egg - mirroring the most common
+     * vanilla right-click interactions, and returning the resulting empty container
+     * (glass bottle / bucket) to the player's inventory just like vanilla does. Anything not
+     * covered here is a safe no-op, matching vanilla's own behaviour of doing nothing for
+     * items with no right-click action. No chat message on success (only on failure).
+     */
     private void doUse(Player player, PlayerInteractEvent event, ItemStack template, StorageEntry entry) {
         if (entry.getCount() <= 0) {
             plugin.getMessageManager().sendWithItem(player, "storage.use-empty", template, null);
@@ -423,8 +460,13 @@ public class InteractListener implements Listener {
                 consumed = true;
             }
         } else if (isEdible(mat)) {
-            applyFood(player, template);
-            consumed = true;
+            if (canEatMore(player, template)) {
+                applyFood(player, template);
+                consumed = true;
+            }
+            // else: already full and this food doesn't allow eating past full (e.g. not a golden
+            // apple/chorus fruit) - vanilla simply does nothing in this case, so we do the same:
+            // no consumption, no message.
         } else if (mat == Material.POTION) {
             applyPotion(player, template);
             giveContainer(player, Material.GLASS_BOTTLE);
@@ -434,6 +476,9 @@ public class InteractListener implements Listener {
                 player.removePotionEffect(eff.getType());
             }
             giveContainer(player, Material.BUCKET);
+            consumed = true;
+        } else if (mat == Material.FIREWORK_ROCKET) {
+            launchFirework(player, template);
             consumed = true;
         } else if ((mat == Material.WATER_BUCKET || mat == Material.LAVA_BUCKET) && clicked != null) {
             Block target = clicked.getRelative(event.getBlockFace());
@@ -478,11 +523,75 @@ public class InteractListener implements Listener {
         }
     }
 
+    /**
+     * True if the player is allowed to eat this food right now: either their hunger isn't full,
+     * or the food is one of the special "always edible" items (golden apple, chorus fruit, etc.)
+     * that vanilla lets you eat even at full hunger.
+     */
+    private boolean canEatMore(Player player, ItemStack template) {
+        if (player.getFoodLevel() < 20) {
+            return true;
+        }
+        try {
+            FoodProperties food = template.getData(DataComponentTypes.FOOD);
+            if (food != null) {
+                return food.canAlwaysEat();
+            }
+        } catch (Throwable ignored) {
+            // Fall through to "can't eat" below if this experimental component ever changes shape.
+        }
+        return false;
+    }
+
+    /**
+     * Applies the item's real nutrition/saturation (via the FOOD data component, so values match
+     * the actual food exactly) and plays the vanilla eating sound. The one thing we genuinely
+     * cannot reproduce here is the client-side "arm raises food to mouth" chewing animation
+     * itself - Bukkit has no API to trigger that for an item the player isn't really holding as
+     * their active-use item, since vanilla only starts that animation as a side effect of really
+     * using a real ItemStack instance it already captured internally. Sound + correct hunger
+     * restore get us as close as the public API allows.
+     */
     private void applyFood(Player player, ItemStack template) {
         int nutrition = 4;
         float saturation = 0.3f;
+        try {
+            FoodProperties food = template.getData(DataComponentTypes.FOOD);
+            if (food != null) {
+                nutrition = food.nutrition();
+                saturation = food.saturation();
+            }
+        } catch (Throwable ignored) {
+            // Fall back to the generic defaults above if this experimental component ever changes shape.
+        }
         player.setFoodLevel(Math.min(20, player.getFoodLevel() + nutrition));
         player.setSaturation(Math.min(20f, player.getSaturation() + saturation));
+        player.getWorld().playSound(player.getLocation(), Sound.ENTITY_GENERIC_EAT, 1f, 1f);
+    }
+
+    /**
+     * Launches a REAL firework rocket entity built from the registered rocket's own FireworkMeta
+     * (so the explosion colors/shape/sound are identical to the genuine item), and applies an
+     * elytra boost if the player is currently gliding - closely matching real firework rocket
+     * behaviour, since a real Firework entity is doing the work rather than a simulated effect.
+     */
+    private void launchFirework(Player player, ItemStack template) {
+        Location loc = player.getLocation();
+        Firework firework = player.getWorld().spawn(loc, Firework.class);
+        FireworkMeta meta = firework.getFireworkMeta();
+
+        if (template.getItemMeta() instanceof FireworkMeta templateMeta) {
+            meta.setPower(templateMeta.getPower());
+            meta.clearEffects();
+            meta.addEffects(templateMeta.getEffects());
+        }
+        firework.setFireworkMeta(meta);
+
+        if (player.isGliding()) {
+            Vector direction = player.getLocation().getDirection().normalize();
+            double boost = 1.5 + (meta.getPower() * 0.5);
+            player.setVelocity(player.getVelocity().add(direction.multiply(boost)));
+        }
     }
 
     private void applyPotion(Player player, ItemStack template) {
