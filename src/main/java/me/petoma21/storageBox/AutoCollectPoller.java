@@ -17,7 +17,7 @@ import java.util.UUID;
 
 public class AutoCollectPoller implements Listener {
 
-    private static final long PERIOD_TICKS = 10L; // 0.5s fallback tick, sped up by checkNow() when possible
+    private static final long PERIOD_TICKS = 10L; // 0.5s fallback tick - now purely a backstop for items inserted directly into the inventory by other plugins (e.g. AdvancedEnchantments' Telepathy); BlockDropItemEvent/EntityPickupItemEvent handle the common (ground-drop-based) cases instantly, so this doesn't need to be aggressive.
 
     private final StorageBox plugin;
     private final Map<UUID, Map<String, Integer>> baselines = new HashMap<>();
@@ -84,46 +84,50 @@ public class AutoCollectPoller implements Listener {
 
     /** Runs one check pass immediately for every online player, instead of waiting for the timer. */
     public void checkNow() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            checkPlayer(player);
+        }
+    }
+
+    public void checkPlayer(Player player) {
         StorageDataManager dataManager = plugin.getStorageDataManager();
 
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            Map<String, StorageEntry> entries = dataManager.getEntries(player.getUniqueId());
-            if (entries.isEmpty()) continue;
+        Map<String, StorageEntry> entries = dataManager.getEntries(player.getUniqueId());
+        if (entries.isEmpty()) return;
 
-            Map<String, Integer> baseline = baselines.computeIfAbsent(player.getUniqueId(), k -> new HashMap<>());
+        Map<String, Integer> baseline = baselines.computeIfAbsent(player.getUniqueId(), k -> new HashMap<>());
 
-            // While the player is manually browsing a chest/shulker box/barrel, don't sweep -
-            // moving items out of it into their own inventory is a deliberate manual action, not
-            // an external "pickup", and shouldn't be immediately vacuumed back into storage.
-            // Baselines still get updated to "current" below so nothing is swept retroactively
-            // once the container is closed.
-            boolean browsingContainer = isViewingChestLikeInventory(player);
+        // While the player is manually browsing a chest/shulker box/barrel, don't sweep -
+        // moving items out of it into their own inventory is a deliberate manual action, not
+        // an external "pickup", and shouldn't be immediately vacuumed back into storage.
+        // Baselines still get updated to "current" below so nothing is swept retroactively
+        // once the container is closed.
+        boolean browsingContainer = isViewingChestLikeInventory(player);
 
-            for (StorageEntry entry : entries.values()) {
-                ItemStack template = entry.getTemplate();
-                String key = ItemUtil.templateKey(template);
-                int current = countMatching(player, template);
-                Integer prev = baseline.get(key);
+        for (StorageEntry entry : entries.values()) {
+            ItemStack template = entry.getTemplate();
+            String key = ItemUtil.templateKey(template);
+            int current = countMatching(player, template);
+            Integer prev = baseline.get(key);
 
-                if (prev == null) {
-                    // First time seeing this entry for this player (new registration, server
-                    // restart, or the box just being brought back) - just record where things
-                    // stand, don't sweep anything retroactively.
-                    baseline.put(key, current);
-                    continue;
-                }
+            if (prev == null) {
+                // First time seeing this entry for this player (new registration, server
+                // restart, or the box just being brought back) - just record where things
+                // stand, don't sweep anything retroactively.
+                baseline.put(key, current);
+                continue;
+            }
 
-                boolean boxPresent = plugin.hasMatchingBoxInInventory(player, template);
-                if (current > prev && entry.isAutocollect() && boxPresent && !browsingContainer) {
-                    int gained = current - prev;
-                    removeMatching(player, template, gained);
-                    entry.addCount(gained);
-                    dataManager.save(player.getUniqueId());
-                    plugin.refreshMatchingBoxes(player, template, entry);
-                    baseline.put(key, current - gained);
-                } else {
-                    baseline.put(key, current);
-                }
+            boolean boxPresent = plugin.hasMatchingBoxInInventory(player, template);
+            if (current > prev && entry.isAutocollect() && boxPresent && !browsingContainer) {
+                int gained = current - prev;
+                removeMatching(player, template, gained);
+                entry.addCount(gained);
+                dataManager.save(player.getUniqueId());
+                plugin.refreshMatchingBoxes(player, template, entry);
+                baseline.put(key, current - gained);
+            } else {
+                baseline.put(key, current);
             }
         }
     }

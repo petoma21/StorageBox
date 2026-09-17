@@ -62,6 +62,17 @@ public class InteractListener implements Listener {
         this.guiListener = guiListener;
     }
 
+    /**
+     * Tracks whenever ANY inventory screen is open for a player (their own inventory, a chest,
+     * a crafting table, etc. - not just our own GUIs) so that world-interaction handlers below
+     * can refuse to act while one is open, plus for a short grace period right after it closes.
+     * <p>
+     * IMPORTANT: InventoryOpenEvent does NOT fire for a player's own inventory (pressing E) -
+     * that's a known Bukkit limitation; it only fires for "real" containers like chests. So we
+     * also mark the flag on the very first InventoryClickEvent/InventoryDragEvent we see for a
+     * player (picking an item up is itself a click, which always happens before a "drop outside"
+     * click), which reliably covers the own-inventory case too.
+     */
     @EventHandler
     public void onInventoryOpen(InventoryOpenEvent event) {
         if (event.getPlayer() instanceof Player player) {
@@ -106,6 +117,22 @@ public class InteractListener implements Listener {
         return lastClose != null && System.currentTimeMillis() - lastClose < GUI_CLOSE_GRACE_MILLIS;
     }
 
+    /**
+     * Debounces a single physical click from being registered as multiple actions. This does
+     * NOT limit how fast you can click on purpose - the default (2 ticks / 100ms) sits well
+     * below a deliberate 3-5 clicks/sec rapid-click pace (200-330ms apart), so genuine repeated
+     * clicks always go through; it only swallows a click being misread as more than one action.
+     *
+     * Note: we intentionally do NOT use Bukkit's native Player#setCooldown/hasCooldown here.
+     * Paper's cooldown system is now backed by the USE_COOLDOWN data component, which arbitrary
+     * items (a plain gold block, a chest, etc.) do not define a cooldown group for by default -
+     * meaning setCooldown() can silently no-op for our items. Tracking timestamps ourselves
+     * guarantees the debounce actually applies regardless of the item's own component data.
+     * There is no server-side "wait for button release" signal in the Minecraft protocol at
+     * all - the client only ever sends discrete per-click packets - so a short, tunable window
+     * (anti-spam.cooldown-ticks in config.yml) is the only mechanism available; adjust it if
+     * your testing shows it's too strict or too lax for your playerbase/latency.
+     */
     private boolean onCooldown(Player player) {
         long now = System.currentTimeMillis();
         long cooldownMillis = plugin.getConfigManager().getAntiSpamCooldownTicks() * 50L;
@@ -162,14 +189,38 @@ public class InteractListener implements Listener {
     //  Main interaction entry point (both left and right click)
     // =========================================================================
 
+    /** Returns whichever hand's item {@code hand} refers to. */
+    private ItemStack getHandItem(Player player, EquipmentSlot hand) {
+        return hand == EquipmentSlot.OFF_HAND
+                ? player.getInventory().getItemInOffHand()
+                : player.getInventory().getItemInMainHand();
+    }
+
+    /** Writes {@code item} back into whichever hand slot {@code hand} refers to. */
+    private void setHandItem(Player player, EquipmentSlot hand, ItemStack item) {
+        if (hand == EquipmentSlot.OFF_HAND) {
+            player.getInventory().setItemInOffHand(item);
+        } else {
+            player.getInventory().setItemInMainHand(item);
+        }
+    }
+
     @EventHandler(ignoreCancelled = false)
     public void onInteract(PlayerInteractEvent event) {
-        if (event.getHand() != EquipmentSlot.HAND) return;
-
         Player player = event.getPlayer();
         if (isGuiBusy(player)) return;
 
-        ItemStack hand = player.getInventory().getItemInMainHand();
+        // PlayerInteractEvent's hand tells us which hand vanilla itself decided is the "active"
+        // one for this click - vanilla's own dual-wield priority already resolved this before the
+        // event ever fires (main hand wins whenever it has anything actionable; the off-hand only
+        // becomes active when the main hand doesn't). So we don't need to special-case "main hand
+        // holds something else" here at all: if this event says OFF_HAND, that's because vanilla
+        // itself chose to use the off-hand item for this click, and a StorageBox there should
+        // behave exactly like it would in the main hand.
+        EquipmentSlot activeHand = event.getHand();
+        if (activeHand != EquipmentSlot.HAND && activeHand != EquipmentSlot.OFF_HAND) return;
+
+        ItemStack hand = getHandItem(player, activeHand);
         if (!itemUtil.isStorageBox(hand)) return;
 
         Action action = event.getAction();
@@ -213,7 +264,7 @@ public class InteractListener implements Listener {
             event.setCancelled(true);
             if (onCooldown(player)) return;
             plugin.playConfiguredSound(player, plugin.getConfigManager().getOpenSound());
-            guiListener.openRegisterGui(player, EquipmentSlot.HAND);
+            guiListener.openRegisterGui(player, activeHand);
             return;
         }
 
@@ -256,8 +307,8 @@ public class InteractListener implements Listener {
                 doDepositAll(player, hand, template, entry); // case 4
             }
         } else if (isWithinUseRange(player, event.getClickedBlock())) {
-            // case 1: deliberately NOT calling event.setCancelled(true) here - see doUse().
-            doUse(player, event, template, entry);
+            // case 1: deliberately NOT calling event.setCancelled(true) for the consumable branch - see doUse().
+            doUse(player, event, template, entry, activeHand);
         } else {
             event.setCancelled(true);
             doDeposit(player, hand, template, entry); // case 2
@@ -504,7 +555,7 @@ public class InteractListener implements Listener {
      * drive block placement turned out to be unreliable in practice (it stopped placing blocks
      * correctly), so those go back to the simple, previously-working direct approach.
      */
-    private void doUse(Player player, PlayerInteractEvent event, ItemStack template, StorageEntry entry) {
+    private void doUse(Player player, PlayerInteractEvent event, ItemStack template, StorageEntry entry, EquipmentSlot hand) {
         if (entry.getCount() <= 0) {
             event.setCancelled(true);
             plugin.getMessageManager().sendWithItem(player, "storage.use-empty", template, null);
@@ -554,7 +605,7 @@ public class InteractListener implements Listener {
 
         if (consumed) {
             entry.setCount(entry.getCount() - 1);
-            finishTransaction(player, player.getInventory().getItemInMainHand(), template, entry);
+            finishTransaction(player, getHandItem(player, hand), template, entry);
         }
     }
 
@@ -618,7 +669,9 @@ public class InteractListener implements Listener {
      */
     @EventHandler(ignoreCancelled = true)
     public void onConsume(PlayerItemConsumeEvent event) {
-        if (event.getHand() != EquipmentSlot.HAND) return;
+        EquipmentSlot hand = event.getHand();
+        if (hand != EquipmentSlot.HAND && hand != EquipmentSlot.OFF_HAND) return;
+
         Player player = event.getPlayer();
         ItemStack consumedItem = event.getItem();
         if (!itemUtil.isRegistered(consumedItem)) return;
@@ -629,18 +682,18 @@ public class InteractListener implements Listener {
 
         StorageEntry entry = plugin.getStorageDataManager().getOrCreateEntry(owner, template);
         ItemStack snapshot = consumedItem.clone();
-        Bukkit.getScheduler().runTask(plugin, () -> handleUseAftermath(player, snapshot, template, entry));
+        Bukkit.getScheduler().runTask(plugin, () -> handleUseAftermath(player, snapshot, template, entry, hand));
     }
 
     /**
-     * Compares the main-hand item to what it was before letting vanilla process a consumable
+     * Compares the hand item to what it was before letting vanilla process a consumable
      * click. If fewer of our box are there now (it was fully consumed, or a stack got smaller),
      * that difference is what storage actually lost - vanilla's own byproduct (empty bucket,
      * glass bottle), if any, is preserved and given back rather than being overwritten, and the
      * box itself is restored to its original amount with an updated, refreshed display.
      */
-    private void handleUseAftermath(Player player, ItemStack before, ItemStack template, StorageEntry entry) {
-        ItemStack after = player.getInventory().getItemInMainHand();
+    private void handleUseAftermath(Player player, ItemStack before, ItemStack template, StorageEntry entry, EquipmentSlot hand) {
+        ItemStack after = getHandItem(player, hand);
 
         boolean afterIsSameBox = after != null && itemUtil.isRegistered(after)
                 && itemUtil.getOwner(after) != null && itemUtil.getOwner(after).equals(itemUtil.getOwner(before));
@@ -652,7 +705,7 @@ public class InteractListener implements Listener {
 
         entry.setCount(Math.max(0, entry.getCount() - consumed));
         ItemStack restoredBox = before.clone();
-        player.getInventory().setItemInMainHand(restoredBox);
+        setHandItem(player, hand, restoredBox);
 
         if (byproduct != null) {
             giveOrDrop(player, byproduct);
