@@ -19,8 +19,13 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.inventory.InventoryOpenEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerItemConsumeEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
@@ -29,7 +34,9 @@ import org.bukkit.inventory.meta.FireworkMeta;
 import org.bukkit.util.Vector;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 public class InteractListener implements Listener {
@@ -43,28 +50,62 @@ public class InteractListener implements Listener {
     /** UUID -> timestamp (millis) of the last processed click/action, used for debouncing. */
     private final Map<UUID, Long> lastActionMillis = new HashMap<>();
 
+    /** Players who currently have ANY inventory GUI open (their own inventory, a chest, etc.). */
+    private final Set<UUID> playersWithGuiOpen = new HashSet<>();
+    /** UUID -> timestamp (millis) a GUI last closed for that player, for a short post-close grace period. */
+    private final Map<UUID, Long> lastGuiCloseMillis = new HashMap<>();
+    private static final long GUI_CLOSE_GRACE_MILLIS = 250L;
+
     public InteractListener(StorageBox plugin, GuiListener guiListener) {
         this.plugin = plugin;
         this.itemUtil = plugin.getItemUtil();
         this.guiListener = guiListener;
     }
 
-    /**
-     * Debounces a single physical click from being registered as multiple actions. This does
-     * NOT limit how fast you can click on purpose - the default (2 ticks / 100ms) sits well
-     * below a deliberate 3-5 clicks/sec rapid-click pace (200-330ms apart), so genuine repeated
-     * clicks always go through; it only swallows a click being misread as more than one action.
-     *
-     * Note: we intentionally do NOT use Bukkit's native Player#setCooldown/hasCooldown here.
-     * Paper's cooldown system is now backed by the USE_COOLDOWN data component, which arbitrary
-     * items (a plain gold block, a chest, etc.) do not define a cooldown group for by default -
-     * meaning setCooldown() can silently no-op for our items. Tracking timestamps ourselves
-     * guarantees the debounce actually applies regardless of the item's own component data.
-     * There is no server-side "wait for button release" signal in the Minecraft protocol at
-     * all - the client only ever sends discrete per-click packets - so a short, tunable window
-     * (anti-spam.cooldown-ticks in config.yml) is the only mechanism available; adjust it if
-     * your testing shows it's too strict or too lax for your playerbase/latency.
-     */
+    @EventHandler
+    public void onInventoryOpen(InventoryOpenEvent event) {
+        if (event.getPlayer() instanceof Player player) {
+            playersWithGuiOpen.add(player.getUniqueId());
+        }
+    }
+
+    @EventHandler
+    public void onAnyInventoryClick(InventoryClickEvent event) {
+        if (event.getWhoClicked() instanceof Player player) {
+            playersWithGuiOpen.add(player.getUniqueId());
+        }
+    }
+
+    @EventHandler
+    public void onAnyInventoryDrag(InventoryDragEvent event) {
+        if (event.getWhoClicked() instanceof Player player) {
+            playersWithGuiOpen.add(player.getUniqueId());
+        }
+    }
+
+    @EventHandler
+    public void onInventoryClose(InventoryCloseEvent event) {
+        if (event.getPlayer() instanceof Player player) {
+            playersWithGuiOpen.remove(player.getUniqueId());
+            lastGuiCloseMillis.put(player.getUniqueId(), System.currentTimeMillis());
+        }
+    }
+
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        UUID id = event.getPlayer().getUniqueId();
+        playersWithGuiOpen.remove(id);
+        lastGuiCloseMillis.remove(id);
+        lastActionMillis.remove(id);
+    }
+
+    private boolean isGuiBusy(Player player) {
+        UUID id = player.getUniqueId();
+        if (playersWithGuiOpen.contains(id)) return true;
+        Long lastClose = lastGuiCloseMillis.get(id);
+        return lastClose != null && System.currentTimeMillis() - lastClose < GUI_CLOSE_GRACE_MILLIS;
+    }
+
     private boolean onCooldown(Player player) {
         long now = System.currentTimeMillis();
         long cooldownMillis = plugin.getConfigManager().getAntiSpamCooldownTicks() * 50L;
@@ -126,6 +167,8 @@ public class InteractListener implements Listener {
         if (event.getHand() != EquipmentSlot.HAND) return;
 
         Player player = event.getPlayer();
+        if (isGuiBusy(player)) return;
+
         ItemStack hand = player.getInventory().getItemInMainHand();
         if (!itemUtil.isStorageBox(hand)) return;
 
@@ -228,6 +271,7 @@ public class InteractListener implements Listener {
     @EventHandler(ignoreCancelled = true)
     public void onAttack(EntityDamageByEntityEvent event) {
         if (!(event.getDamager() instanceof Player player)) return;
+        if (isGuiBusy(player)) return;
 
         ItemStack hand = player.getInventory().getItemInMainHand();
         if (!itemUtil.isRegistered(hand)) return;
